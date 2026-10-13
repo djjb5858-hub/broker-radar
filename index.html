@@ -180,10 +180,7 @@ textarea.ta{width:100%;min-height:70px;margin-top:10px;padding:12px;border:1px s
 
  <div class="panel" style="margin-bottom:16px">
   <div class="section-title">네이버 뉴스 검색 연동</div>
-  <div class="toolbar tx-live">
-   <input id="nvId" class="search" placeholder="Client ID (비우면 코드 기본값 사용)" autocomplete="off">
-   <input id="nvSecret" type="password" class="search" placeholder="Client Secret (비우면 코드 기본값 사용)" autocomplete="off">
-  </div>
+  <div class="muted" style="font-size:12px;margin-bottom:12px">NAVER API HUB 키는 서버(Vercel 환경변수)에 저장되며, 이 화면은 같은 사이트의 <b>/api/news</b> 를 통해 뉴스를 가져옵니다.</div>
   <div class="toolbar">
    <input id="nvQuery" class="search" list="nvPresets" value="부동산 대출" placeholder="검색어 (예: 스트레스 DSR)">
    <datalist id="nvPresets"><option value="주택담보대출 규제"><option value="스트레스 DSR"><option value="전세자금대출"><option value="대전 분양"><option value="부동산 대출 금리"><option value="LTV DSR 규제"></datalist>
@@ -448,9 +445,8 @@ let sendLog=[];
 let currentNewsId=null;
 let selectedBrokerIds=new Set();
 
-/* NAVER API HUB 검색 API(뉴스) 설정 (헤더: X-NCP-APIGW-API-KEY-ID / X-NCP-APIGW-API-KEY) — 입력창이 비어 있으면 아래 기본값을 사용합니다.
-   ※ 이 파일을 공개 주소(Vercel 등)에 올리면 키가 그대로 노출됩니다. 공개 배포 시에는 서버리스 프록시 사용을 권장합니다. */
-const NEWS_API={base:'https://naverapihub.apigw.ntruss.com/search/v1/news',display:10,clientId:'j9pyttynaa',clientSecret:'7PrGCssD1kerGh7MR8eHpyk6RYRUzt3p2Szxubcj'};
+/* 뉴스 검색은 같은 사이트의 서버리스 프록시(/api/news)를 통해 NAVER API HUB 를 호출합니다. 키는 서버 환경변수에만 있습니다. */
+const NEWS_API={base:'/api/news',display:10};
 function nEsc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function nStatus(msg,kind){const el=document.getElementById('nvStatus');el.textContent=msg||'';el.className='tx-status'+(kind?' '+kind:'');}
 function catClass(c){return 'cat-'+c;}
@@ -469,18 +465,14 @@ function newsCategory(t){
   return'대출';
 }
 async function loadNaverNews(){
-  const cid=(document.getElementById('nvId').value||'').trim()||NEWS_API.clientId,sec=(document.getElementById('nvSecret').value||'').trim()||NEWS_API.clientSecret;
   const q=(document.getElementById('nvQuery').value||'').trim();
   if(!q){nStatus('검색어를 입력해 주세요.','err');return;}
-  if(!cid||!sec){nStatus('Client ID / Client Secret 을 입력해 주세요.','err');return;}
-  const iv=(document.getElementById('nvId').value||'').trim(),sv=(document.getElementById('nvSecret').value||'').trim();
-  try{if(iv)sessionStorage.setItem('nvId',iv);if(sv)sessionStorage.setItem('nvSecret',sv);}catch(e){}
   const url=`${NEWS_API.base}?query=${encodeURIComponent(q)}&display=${NEWS_API.display}&start=1&sort=${document.getElementById('nvSort').value}`;
   const btn=document.getElementById('nvBtn');btn.disabled=true;nStatus('뉴스를 불러오는 중…','');
   try{
     let res,data;
-    try{res=await fetch(url,{headers:{'X-NCP-APIGW-API-KEY-ID':cid,'X-NCP-APIGW-API-KEY':sec}});}catch(e){throw new Error('CORS_OR_NETWORK');}
-    try{data=await res.json();}catch(e){throw new Error('응답 형식 오류 (HTTP '+res.status+')');}
+    try{res=await fetch(url);}catch(e){throw new Error('CORS_OR_NETWORK');}
+    try{data=await res.json();}catch(e){throw new Error(res.status===404?'NO_PROXY':'응답 형식 오류 (HTTP '+res.status+')');}
     if(!res.ok||data.errorMessage||data.error)throw new Error((data.errorMessage||data.error?.message||data.message||'API 오류')+(data.error?.details?' - '+data.error.details:'')+' ('+(data.errorCode||data.error?.errorCode||res.status)+')');
     const items=(data.items||[]).map(it=>({title:newsClean(it.title),body:newsClean(it.description),link:it.originallink||it.link||'',pub:it.pubDate||''}));
     const z=n=>String(n).padStart(2,'0'),have=new Set(newsList.map(n=>n.link).filter(Boolean));let added=0;
@@ -495,11 +487,11 @@ async function loadNaverNews(){
     nStatus(`✔ "${q}" 검색 결과 ${items.length}건 중 ${added}건을 뉴스 목록에 추가했습니다.`,'ok');
   }catch(e){
     nStatus(e.message==='CORS_OR_NETWORK'
-      ?'네이버 검색 API 호출이 브라우저에서 차단되었거나 네트워크 오류입니다(CORS 가능성). 서버/프록시를 경유하도록 NEWS_API.base 를 변경해 주세요.'
+      ?'서버(/api/news)에 연결하지 못했습니다. 네트워크 상태를 확인하거나, 파일을 직접 열지 말고 Vercel 배포 주소로 접속해 주세요.'
+      :e.message==='NO_PROXY'?'/api/news 를 찾을 수 없습니다. api/news.js 파일이 index.html 과 함께 Vercel 에 배포되었는지 확인해 주세요.'
       :'불러오기 실패: '+e.message,'err');
   }finally{btn.disabled=false;}
 }
-(function(){try{const i=sessionStorage.getItem('nvId'),s=sessionStorage.getItem('nvSecret');if(i)document.getElementById('nvId').value=i;if(s)document.getElementById('nvSecret').value=s;}catch(e){}})();
 function addNews(){
   const cat=document.getElementById('newsCat').value;
   const title=document.getElementById('newsTitle').value.trim();
