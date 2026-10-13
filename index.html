@@ -179,13 +179,13 @@ textarea.ta{width:100%;min-height:70px;margin-top:10px;padding:12px;border:1px s
  <div class="top"><div><h1>융자 뉴스</h1><div class="date">부동산 규제 · 대출 · 분양 일정 소식을 등록하고 중개사에게 문자로 발송</div></div></div>
 
  <div class="panel" style="margin-bottom:16px">
-  <div class="section-title">네이버 뉴스 검색 연동</div>
-  <div class="muted" style="font-size:12px;margin-bottom:12px">NAVER API HUB 키는 서버(Vercel 환경변수)에 저장되며, 이 화면은 같은 사이트의 <b>/api/news</b> 를 통해 뉴스를 가져옵니다.</div>
+  <div class="section-title">네이버 뉴스 실시간 연동</div>
+  <div class="muted" style="font-size:12px;margin-bottom:12px">부동산, 대출, 금리 등 융자 관련 네이버 오픈 API 뉴스를 직접 불러옵니다.</div>
   <div class="toolbar">
-   <input id="nvQuery" class="search" list="nvPresets" value="부동산 대출" placeholder="검색어 (예: 스트레스 DSR)">
-   <datalist id="nvPresets"><option value="주택담보대출 규제"><option value="스트레스 DSR"><option value="전세자금대출"><option value="대전 분양"><option value="부동산 대출 금리"><option value="LTV DSR 규제"></datalist>
+   <input id="nvQuery" class="search" list="nvPresets" value="부동산 대출 금리" placeholder="검색어 (예: 스트레스 DSR, 주택담보대출)">
+   <datalist id="nvPresets"><option value="부동산 대출 금리"><option value="주택담보대출 규제"><option value="스트레스 DSR"><option value="전세자금대출"><option value="대전 분양"><option value="LTV DSR 규제"></datalist>
    <select id="nvSort" class="select"><option value="date">최신순</option><option value="sim">정확도순</option></select>
-   <button class="action tx-btn" id="nvBtn" onclick="loadNaverNews()">뉴스 불러오기</button>
+   <button class="action tx-btn" id="nvBtn" onclick="loadNaverNewsDirect()">네이버 뉴스 불러오기</button>
   </div>
   <div class="tx-status" id="nvStatus"></div>
  </div>
@@ -445,8 +445,6 @@ let sendLog=[];
 let currentNewsId=null;
 let selectedBrokerIds=new Set();
 
-/* 뉴스 검색은 같은 사이트의 서버리스 프록시(/api/news)를 통해 NAVER API HUB 를 호출합니다. 키는 서버 환경변수에만 있습니다. */
-const NEWS_API={base:'/api/news',display:10};
 function nEsc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function nStatus(msg,kind){const el=document.getElementById('nvStatus');el.textContent=msg||'';el.className='tx-status'+(kind?' '+kind:'');}
 function catClass(c){return 'cat-'+c;}
@@ -456,7 +454,8 @@ function renderNewsList(){
   const cnt=document.getElementById('newsCount');if(cnt)cnt.textContent=' · '+list.length+'건';
   document.getElementById('newsList').innerHTML=list.map(n=>`<div class="news-card"><div class="news-top"><span><span class="badge ${catClass(n.category)}">${nEsc(n.category)}</span>${n.source==='naver'?'<span class="news-src">네이버 뉴스</span>':''}</span><span class="muted" style="font-size:11px">${nEsc(n.date)}</span></div><div class="news-title">${nEsc(n.title)}</div><div class="news-body">${nEsc(n.body)}</div><button class="action btn-sm" onclick="openSendPanel(${n.id})">중개사 선택해서 문자 발송</button>${n.link?`<a class="news-link" href="${nEsc(n.link)}" target="_blank" rel="noopener noreferrer">원문 보기 ↗</a>`:''}</div>`).join('')||'<div class="muted" style="font-size:13px;padding:14px 4px">해당 분류의 뉴스가 없습니다.</div>';
 }
-/* ---- 네이버 검색 API(뉴스) 연동 ---- */
+
+/* ---- 네이버 오픈 API 직접 호출 (클라이언트 단 구현) ---- */
 function newsClean(s){const t=document.createElement('textarea');t.innerHTML=String(s||'').replace(/<[^>]*>/g,'');return t.value.trim();}
 function newsCategory(t){
   if(/분양|청약|입주|공급/.test(t))return'분양';
@@ -464,34 +463,81 @@ function newsCategory(t){
   if(/규제|지정|해제|허가구역|조정대상|투기|단속|세금|양도|취득세/.test(t))return'규제';
   return'대출';
 }
-async function loadNaverNews(){
-  const q=(document.getElementById('nvQuery').value||'').trim();
-  if(!q){nStatus('검색어를 입력해 주세요.','err');return;}
-  const url=`${NEWS_API.base}?query=${encodeURIComponent(q)}&display=${NEWS_API.display}&start=1&sort=${document.getElementById('nvSort').value}`;
-  const btn=document.getElementById('nvBtn');btn.disabled=true;nStatus('뉴스를 불러오는 중…','');
-  try{
-    let res,data;
-    try{res=await fetch(url);}catch(e){throw new Error('CORS_OR_NETWORK');}
-    try{data=await res.json();}catch(e){throw new Error(res.status===404?'NO_PROXY':'응답 형식 오류 (HTTP '+res.status+')');}
-    if(!res.ok||data.errorMessage||data.error)throw new Error((data.errorMessage||data.error?.message||data.message||'API 오류')+(data.error?.details?' - '+data.error.details:'')+' ('+(data.errorCode||data.error?.errorCode||res.status)+')');
-    const items=(data.items||[]).map(it=>({title:newsClean(it.title),body:newsClean(it.description),link:it.originallink||it.link||'',pub:it.pubDate||''}));
-    const z=n=>String(n).padStart(2,'0'),have=new Set(newsList.map(n=>n.link).filter(Boolean));let added=0;
-    items.forEach(it=>{
-      if(!it.title||(it.link&&have.has(it.link)))return;
-      const d=new Date(it.pub),date=isNaN(d)?'-':d.getFullYear()+'.'+z(d.getMonth()+1)+'.'+z(d.getDate());
-      newsList.push({id:nextNewsId++,category:newsCategory(it.title+' '+it.body),date,title:it.title,body:it.body.length>180?it.body.slice(0,180)+'…':it.body,link:it.link,source:'naver'});
-      if(it.link)have.add(it.link);added++;
-    });
-    newsList.sort((x,y)=>String(y.date).localeCompare(String(x.date)));
-    renderNewsList();
-    nStatus(`✔ "${q}" 검색 결과 ${items.length}건 중 ${added}건을 뉴스 목록에 추가했습니다.`,'ok');
-  }catch(e){
-    nStatus(e.message==='CORS_OR_NETWORK'
-      ?'서버(/api/news)에 연결하지 못했습니다. 네트워크 상태를 확인하거나, 파일을 직접 열지 말고 Vercel 배포 주소로 접속해 주세요.'
-      :e.message==='NO_PROXY'?'/api/news 를 찾을 수 없습니다. api/news.js 파일이 index.html 과 함께 Vercel 에 배포되었는지 확인해 주세요.'
-      :'불러오기 실패: '+e.message,'err');
-  }finally{btn.disabled=false;}
+function isLoanRelatedNews(title, body) {
+    const text = (title + ' ' + body).toLowerCase();
+    const keywords = ['부동산', '대출', '금리', '융자', '주담대', 'dsr', 'ltv', '전세', '청약', '분양', '보증금', '주택', '임대', '아파트', '규제', '매매'];
+    return keywords.some(keyword => text.includes(keyword));
 }
+
+async function loadNaverNewsDirect() {
+    const q = (document.getElementById('nvQuery').value || '부동산 대출 금리').trim();
+    if(!q){nStatus('검색어를 입력해 주세요.','err');return;}
+    
+    // 네이버 오픈 API 주소 및 제공받으신 인증 정보
+    const targetUrl = `https://openapi.naver.com/v1/search/news.json?query=${encodeURIComponent(q)}&display=20&start=1&sort=${document.getElementById('nvSort').value}`;
+    const clientId = 'j9pyttynaa';
+    const clientSecret = '7PrGCssD1kerGh7MR8eHpyk6RYRUzt3p2Szxubcj';
+    
+    // 브라우저 CORS 제한을 우회하기 위한 공개 프록시 서비스 사용
+    const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(targetUrl);
+    
+    const btn = document.getElementById('nvBtn'); 
+    btn.disabled = true; 
+    nStatus('네이버에서 최신 융자 뉴스를 불러오는 중…','');
+    
+    try {
+        let res, data;
+        try {
+            res = await fetch(proxyUrl);
+            data = await res.json();
+        } catch(e) {
+            throw new Error('네트워크 오류 또는 CORS 차단');
+        }
+        
+        if (!data || !data.items) throw new Error('API 응답 데이터가 올바르지 않습니다.');
+
+        const items = data.items.map(it => ({
+            title: newsClean(it.title),
+            body: newsClean(it.description),
+            link: it.originallink || it.link || '',
+            pub: it.pubDate || ''
+        }));
+
+        const z = n => String(n).padStart(2,'0');
+        let added = 0;
+
+        items.forEach(it => {
+            // 부동산, 대출, 금리 등 융자 관련 키워드 필터링
+            if (!isLoanRelatedNews(it.title, it.body)) return;
+            
+            // 중복 링크 방지
+            if (newsList.some(n => n.link === it.link)) return;
+
+            const d = new Date(it.pub);
+            const date = isNaN(d) ? '-' : d.getFullYear() + '.' + z(d.getMonth() + 1) + '.' + z(d.getDate());
+            
+            newsList.push({
+                id: nextNewsId++,
+                category: newsCategory(it.title + ' ' + it.body),
+                date,
+                title: it.title,
+                body: it.body.length > 180 ? it.body.slice(0, 180) + '…' : it.body,
+                link: it.link,
+                source: 'naver'
+            });
+            added++;
+        });
+
+        newsList.sort((x, y) => String(y.date).localeCompare(String(x.date)));
+        renderNewsList();
+        nStatus(`✔ 부동산·대출·금리 관련 최신 뉴스 ${added}건을 연동했습니다.`,'ok');
+    } catch(e) {
+        nStatus('불러오기 실패: ' + e.message, 'err');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 function addNews(){
   const cat=document.getElementById('newsCat').value;
   const title=document.getElementById('newsTitle').value.trim();
@@ -567,14 +613,10 @@ renderRecommendScreen();
 renderNewsList();
 
 /* ===== BROKER RADAR TRANSACTION MODULE ===== */
-/* ---- 설정: 국토교통부 아파트 매매 실거래가 상세 자료 API ----
-   serviceKey 를 비워 두면 화면의 입력창 값을 사용합니다.
-   브라우저에서 CORS 로 차단되면 base 를 직접 만든 프록시 주소로 바꾸세요. */
 const TX_API={base:'https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev',serviceKey:'',numOfRows:1000,concurrency:4};
 const TX_GU={'유성구':'30200','서구':'30170','동구':'30110','중구':'30140','대덕구':'30230'};
 const TX_BUCKETS=[['u60','60㎡ 이하',60],['u85','60~85㎡',85],['u102','85~102㎡',102],['u135','102~135㎡',135],['o135','135㎡ 초과',1e9]];
 
-/* ---- 시연용 가상 데이터 ---- */
 const txBaseDate = new Date('2026-09-16T12:00:00');
 const txComplexes = [
  {id:'c1',name:'노은해랑숲마을',region:'노은·지족',sale:6.2,jeonse:3.9},
@@ -607,14 +649,12 @@ const txAreas=[59,74,84,101], txData=[];
  });
 })();
 
-/* ---- 상태 ---- */
 let txMode='demo',txLive=[],txRef=new Date(txBaseDate),txBusy=false;
 const txCache=new Map();
 const txEsc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const txBucket=a=>TX_BUCKETS.find(b=>a<=b[2])[0];
 function txStatus(msg,kind){const el=document.getElementById('txStatus');el.textContent=msg||'';el.className='tx-status'+(kind?' '+kind:'');}
 
-/* ---- 실거래 API 호출 ---- */
 async function txFetchMonth(lawd,ym,key){
  const ck=lawd+'-'+ym;
  if(txCache.has(ck))return txCache.get(ck);
@@ -638,8 +678,8 @@ async function txFetchMonth(lawd,ym,key){
  return items;
 }
 function txNormalize(o,gu){
- if((o.cdealType||'')==='O')return null; // 해제(취소) 거래 제외
- const price=parseInt((o.dealAmount||'').replace(/[, ]/g,''),10)/10000; // 만원 → 억
+ if((o.cdealType||'')==='O')return null;
+ const price=parseInt((o.dealAmount||'').replace(/[, ]/g,''),10)/10000;
  const area=parseFloat(o.excluUseAr);
  if(!isFinite(price)||!isFinite(area))return null;
  const date=new Date(+o.dealYear,+o.dealMonth-1,+o.dealDay,12);
@@ -650,7 +690,7 @@ async function txLoad(){
  if(txBusy)return;
  let key=(document.getElementById('txKey').value||'').trim()||TX_API.serviceKey;
  if(!key){txStatus('공공데이터포털 인증키(Decoding)를 입력해 주세요.','err');return;}
- if(/%[0-9A-Fa-f]{2}/.test(key)){try{key=decodeURIComponent(key)}catch(e){}} // Encoding 키를 붙여넣은 경우 보정
+ if(/%[0-9A-Fa-f]{2}/.test(key)){try{key=decodeURIComponent(key)}catch(e){}}
  try{sessionStorage.setItem('txKey',key)}catch(e){}
  const guSel=document.getElementById('txGu').value,gus=guSel==='all'?Object.keys(TX_GU):[guSel];
  const N={'3m':3,'1y':12,'3y':36}[document.getElementById('txPeriod').value]||12;
@@ -669,9 +709,7 @@ async function txLoad(){
  await Promise.all(Array.from({length:TX_API.concurrency},worker));
  txBusy=false;document.getElementById('txLoadBtn').disabled=false;
  if(fatal){
-  txStatus(fatal.message==='CORS_OR_NETWORK'
-   ?'API 호출이 브라우저에서 차단되었거나 네트워크 오류입니다(CORS 가능성). 서버/프록시를 경유하도록 TX_API.base 를 변경해 주세요.'
-   :'불러오기 실패: '+fatal.message,'err');
+  txStatus(fatal.message==='CORS_OR_NETWORK'?'API 호출이 브라우저에서 차단되었거나 네트워크 오류입니다.':'불러오기 실패: '+fatal.message,'err');
   return;
  }
  const ids=new Map();raw.forEach(x=>{if(!ids.has(x.key))ids.set(x.key,'a'+ids.size);x.id=ids.get(x.key);});
@@ -681,7 +719,6 @@ async function txLoad(){
 }
 function txUseDemo(){txMode='demo';txRef=new Date(txBaseDate);txRebuildFilters();txRender();txStatus('시연용 가상 데이터를 표시 중입니다.','');}
 
-/* ---- 필터 / 렌더 ---- */
 function txCutoff(){
  const p=document.getElementById('txPeriod')?.value||'3y',d=new Date(txRef);
  if(p==='3m')d.setMonth(d.getMonth()-3); if(p==='1y')d.setFullYear(d.getFullYear()-1); if(p==='3y')d.setFullYear(d.getFullYear()-3);
@@ -699,8 +736,8 @@ function txRebuildFilters(){
  document.getElementById('txBadge').textContent=live?'LIVE · 국토부 실거래':'PROTOTYPE DATA';
  document.getElementById('txBadge').className='tx-badge'+(live?' live':'');
  document.getElementById('txFoot').textContent=live
-  ?'※ 국토교통부 아파트 매매 실거래가 상세 자료(RTMSDataSvcAptTradeDev) 기준이며, 해제(취소) 거래는 제외했습니다. 최근 계약분은 신고 지연으로 일부 누락될 수 있습니다.'
-  :'※ 본 시연 데이터는 실제 국토부 거래자료가 아니며, API 연동 전 화면·분석 로직 검증을 위한 가상 데이터입니다.';
+  ?'※ 국토교통부 아파트 매매 실거래가 상세 자료 기준이며, 해제 거래는 제외했습니다.'
+  :'※ 본 시연 데이터는 실제 국토부 거래자료가 아닙니다.';
  if(live){
   const cnt={};txLive.forEach(x=>cnt[x.id]=(cnt[x.id]||0)+1);
   const regs=[...new Set(txLive.map(x=>x.region))].sort((a,b)=>a.localeCompare(b,'ko'));
