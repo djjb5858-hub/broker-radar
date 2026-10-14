@@ -84,8 +84,8 @@ textarea.ta{width:100%;min-height:70px;margin-top:10px;padding:12px;border:1px s
  <div class="top"><div><h1>대전 중개사 영업 대시보드</h1><div class="date" id="dbSub">BROKER RADAR · DEMO DATA</div></div><div class="date" id="dbDate">2026.09.10 기준</div></div>
  <div class="panel" style="margin-bottom:16px">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-   <div><div class="section-title" style="margin:0">대전 서구 중개업소 연동</div><div class="muted" style="font-size:12px;margin-top:4px">서구청 오픈API(getEstateBrkpg) · 상호·주소·전화·영업상태는 실데이터, 수수료·거래·등급·접촉이력 등은 가상 데이터로 보강</div></div>
-   <div style="display:flex;gap:8px"><button class="action tx-btn" id="sgBtn" onclick="loadSeogu()">서구 중개업소 불러오기</button><button class="back" onclick="useDemoBrokers()">시연데이터로 보기</button></div>
+   <div><div class="section-title" style="margin:0">대전 서구 중개업소 CSV 연동</div><div class="muted" style="font-size:12px;margin-top:4px">대전광역시 서구 부동산 중개업 CSV 파일 · 상호·주소·영업상태는 실데이터, 수수료·거래·등급·접촉이력 등은 가상 데이터로 보강</div></div>
+   <div style="display:flex;gap:8px"><button class="action tx-btn" id="sgBtn" onclick="loadSeogu()">CSV 중개업소 불러오기</button><button class="back" onclick="useDemoBrokers()">시연데이터로 보기</button></div>
   </div>
   <div class="tx-status" id="sgStatus" style="margin:10px 0 0"></div>
  </div>
@@ -360,104 +360,90 @@ const brokers=data.map((d,i)=>makeBroker(d,i));
 const demoBrokers=brokers.slice();
 
 
-/* ===== 대전 서구 부동산중개업 오픈API 연동 ===== */
-/* 브라우저는 같은 사이트의 /api/brokers(서버리스 프록시)만 호출하고, 인증키는 서버 환경변수(SEOGU_API_KEY)에 둡니다.
-   응답 필드명을 정확히 알면 아래 SEOGU_FIELDS 에 실제 키를 지정하세요(비워두면 이름 패턴으로 자동 인식). */
-const SEOGU_API={base:'/api/brokers',pageSize:100,maxPages:40};
-const SEOGU_FIELDS={name:'',owner:'',address:'',phone:'',status:'',regNo:''};
-let sgLive=false,sgBusy=false;
-function sgStatus(msg,kind){const el=document.getElementById('sgStatus');if(!el)return;el.textContent=msg||'';el.className='tx-status'+(kind?' '+kind:'');el.style.margin='10px 0 0';}
-function sgFindItems(o,depth){
-  depth=depth||0;if(depth>6||o==null)return null;
-  if(Array.isArray(o))return o.length&&typeof o[0]==='object'?o:null;
-  if(typeof o!=='object')return null;
-  for(const k of ['items','item','data','list','rows','result','body','response']){
-    if(k in o){const v=o[k];if(v&&!Array.isArray(v)&&typeof v==='object'&&k==='item'&&!sgFindItems(v,depth+1))return [v];const r=sgFindItems(v,depth+1);if(r)return r;}
+/* ===== 대전 서구 부동산중개업 CSV 파일 연동 ===== */
+
+/* ===== 대전 서구 부동산중개업 CSV 파일 연동 ===== */
+let sgLive = false, sgBusy = false;
+function sgStatus(msg, kind){const el=document.getElementById('sgStatus');if(!el)return;el.textContent=msg||'';el.className='tx-status'+(kind?' '+kind:'');el.style.margin='10px 0 0';}
+
+// CSV 파서 (따옴표 및 쉼표 처리 포함)
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  if(lines.length === 0) return result;
+  
+  // 헤더 파싱
+  const headers = parseCSVLine(lines[0]);
+  
+  for(let i = 1; i < lines.length; i++) {
+    if(!lines[i].trim()) continue;
+    const currentLine = parseCSVLine(lines[i]);
+    if(currentLine.length === headers.length) {
+      const obj = {};
+      for(let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = currentLine[j];
+      }
+      result.push(obj);
+    }
   }
-  for(const v of Object.values(o)){const r=sgFindItems(v,depth+1);if(r)return r;}
-  return null;
+  return result;
 }
-function sgFindKey(o,re,depth){
-  depth=depth||0;if(depth>6||o==null||typeof o!=='object')return undefined;
-  for(const [k,v] of Object.entries(o)){if(re.test(k)&&v!=null&&typeof v!=='object')return v;}
-  for(const v of Object.values(o)){if(v&&typeof v==='object'&&!Array.isArray(v)){const r=sgFindKey(v,re,depth+1);if(r!==undefined)return r;}}
-  return undefined;
-}
-function sgParse(text){
-  let obj=null;
-  try{obj=JSON.parse(text);}catch(e){}
-  if(obj){
-    if(obj.error||obj.errorMessage)throw new Error(obj.error?.message||obj.errorMessage||'API 오류');
-    const rc=sgFindKey(obj,/^resultCode$/i),rm=sgFindKey(obj,/^resultMsg$/i);
-    if(rc!==undefined&&!/^(0+|INFO-000|NORMAL.*)$/i.test(String(rc)))throw new Error((rm||'API 오류')+' ('+rc+')');
-    const total=parseInt(sgFindKey(obj,/^(totalCount|total_count|totalcnt|total)$/i)||'0',10);
-    return{items:sgFindItems(obj)||[],total};
+
+function parseCSVLine(text) {
+  const result = [];
+  let flag = false;
+  let current = '';
+  for(let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if(char === '"') {
+      flag = !flag;
+    } else if(char === ',' && !flag) {
+      result.path = result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
   }
-  const doc=new DOMParser().parseFromString(text,'text/xml');
-  if(doc.querySelector('parsererror'))throw new Error('응답 형식을 해석할 수 없습니다: '+text.slice(0,80).replace(/\s+/g,' '));
-  const am=doc.querySelector('returnAuthMsg');if(am)throw new Error(am.textContent.trim());
-  const rc=doc.querySelector('resultCode')?.textContent.trim();
-  if(rc&&!/^(0+|INFO-000|NORMAL.*)$/i.test(rc))throw new Error((doc.querySelector('resultMsg')?.textContent||'API 오류')+' ('+rc+')');
-  const items=[...doc.querySelectorAll('item')].map(el=>{const o={};[...el.children].forEach(c=>o[c.tagName]=c.textContent.trim());return o;});
-  return{items,total:parseInt(doc.querySelector('totalCount')?.textContent||'0',10)};
+  result.push(current.trim());
+  return result;
 }
-const SG_PAT={
-  name:[/사무소명|상호|업소명|사업장명/,/(bsnm|bplc|office|ofc|cmpnm|biz|shop|brkpg|estate).*(nm|name)/i,/^(name|nm|title)$/i],
-  owner:[/대표|중개업자|중개인/,/(rprs|rpsv|ceo|brkr|owner|rep)/i],
-  address:[/주소|소재지/,/(addr|adres|rdnm|lnm|location)/i],
-  phone:[/전화|연락처/,/(tel|phone|tlphon|cttpc)/i],
-  status:[/상태|영업/,/(sttus|status|state)/i],
-  regNo:[/등록번호|번호/,/(regist|regno|_no$|no$|number)/i]
-};
-function sgPick(o,key){
-  const fixed=SEOGU_FIELDS[key];
-  if(fixed&&o[fixed]!=null)return String(o[fixed]).trim();
-  const keys=Object.keys(o);
-  for(const re of SG_PAT[key]){const k=keys.find(k=>re.test(k)&&o[k]!=null&&typeof o[k]!=='object'&&String(o[k]).trim());if(k)return String(o[k]).trim();}
-  return '';
-}
+
 function sgDong(addr){
-  let m=addr.match(/\(([가-힣0-9]+동)[,)\s]/);
-  if(m)return m[1];
-  m=addr.match(/([가-힣]+\d?동)(?=[\s,)]|$)/);
-  return m?m[1]:'';
+  let m = addr.match(/\(([가-힣0-9]+동)[,)\s]/);
+  if(m) return m[1];
+  m = addr.match(/([가-힣]+\d?동)(?=[\s,)]|$)/);
+  return m ? m[1] : '서구';
 }
-function sgNormalize(it){
-  let name=sgPick(it,'name');
-  if(!name){const v=Object.values(it).find(v=>typeof v==='string'&&v.trim().length>1&&!/^[\d\-\s.:]+$/.test(v));name=v?v.trim():'';}
-  if(!name)return null;
-  const status=sgPick(it,'status');
-  if(/폐업|휴업|말소|취소|정지/.test(status))return null; // 영업 중인 업소만
-  const address=sgPick(it,'address');
-  return{name,owner:sgPick(it,'owner'),address,phone:sgPick(it,'phone'),status,regNo:sgPick(it,'regNo'),dong:sgDong(address)};
-}
-/* ---- API에 없는 항목은 이름 기반으로 항상 같은 값이 나오는 가상 데이터로 보강 ---- */
+
 function sgHash(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
 function sgRng(seed){let a=seed;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 const SG_SUR=['김','이','박','최','정','강','조','윤','장','임'],SG_GIV=['민준','서연','지호','수진','현우','예린','태호','지은','재현','하윤','도현','서윤'];
+
 function sgRow(it,i){
-  const r=sgRng(sgHash(it.name+'|'+it.regNo+'|'+it.address)),z=n=>String(n).padStart(2,'0');
+  const r=sgRng(sgHash(it.사무소명+'|'+it.등록번호+'|'+it.사무소주소)),z=n=>String(n).padStart(2,'0');
   const trades=Math.round(4+Math.pow(r(),1.6)*17);
   const growth=Math.round(-5+r()*40),loan=Math.round(20+r()*68),days=Math.round(3+r()*62);
   const fee=Math.round(trades*(120+r()*60)/10)*10;
   const grade=trades>=19?'A+':trades>=15?'A':trades>=12?'A-':trades>=9?'B+':trades>=6?'B':'C+';
-  const owner=it.owner||SG_SUR[Math.floor(r()*SG_SUR.length)]+SG_GIV[Math.floor(r()*SG_GIV.length)];
+  const owner=SG_SUR[Math.floor(r()*SG_SUR.length)]+SG_GIV[Math.floor(r()*SG_GIV.length)];
   const birth=(1962+Math.floor(r()*30))+'.'+z(1+Math.floor(r()*12))+'.'+z(1+Math.floor(r()*28));
-  const phone=it.phone||'042-000-'+String(1000+Math.floor(r()*9000));
+  const phone='042-000-'+String(1000+Math.floor(r()*9000));
+  const dong=sgDong(it.사무소주소);
   const types=['방문','전화','문자'];
-  return [nEsc(it.name),nEsc(owner),birth,nEsc(phone),nEsc(it.address||'대전 서구'),trades,fee.toLocaleString()+'만원',nEsc(it.dong||'서구'),grade,growth,loan,days,types[Math.floor(r()*3)]];
+  return [nEsc(it.사무소명),nEsc(owner),birth,nEsc(phone),nEsc(it.사무소주소),trades,fee.toLocaleString()+'만원',nEsc(dong),grade,growth,loan,days,types[Math.floor(r()*3)]];
 }
+
 function updateDashKpis(){
   const set=(id,t)=>{const e=document.getElementById(id);if(e)e.textContent=t;};
   if(sgLive){
     const tr=brokers.reduce((a,b)=>a+b.trades,0),fee=brokers.reduce((a,b)=>a+(parseInt(String(b.fee).replace(/[^\d]/g,''),10)||0),0);
-    set('dbCount',brokers.length.toLocaleString());set('dbCountSub','서구청 API · 영업 중 업소');
+    set('dbCount',brokers.length.toLocaleString());set('dbCountSub','서구 CSV 파일 · 영업 중 업소');
     set('dbTrades',tr.toLocaleString()+'건');set('dbTradesSub','가상 데이터');
     set('dbFee',(fee/10000).toFixed(1)+'억');set('dbFeeSub','가상 데이터');
     set('dbTouch',brokers.filter(b=>b.days<=30).length+'회');set('dbTouchSub','가상 데이터');
-    set('dbSub','BROKER RADAR · 대전 서구 중개업소 (실데이터 + 가상 보강)');
+    set('dbSub','BROKER RADAR · 대전 서구 중개업소 (CSV 실데이터 + 가상 보강)');
     const d=new Date(),z=n=>String(n).padStart(2,'0');set('dbDate',d.getFullYear()+'.'+z(d.getMonth()+1)+'.'+z(d.getDate())+' 기준');
-    set('dbFoot','※ 중개업소명·주소·전화·영업상태는 대전 서구청 오픈API 데이터입니다. 대표자(미제공 시)·생년월일·거래실적·수수료·등급·접촉이력·AI 점수는 프로토타입용 가상 데이터입니다.');
+    set('dbFoot','※ 중개업소명·주소·영업상태는 대전 서구청 CSV 파일 데이터입니다. 대표자·연락처·생년월일·거래실적·수수료·등급·접촉이력·AI 점수는 프로토타입용 가상 데이터입니다.');
   }else{
     set('dbCount','30');set('dbCountSub','대전 샘플 데이터');set('dbTrades','350건');set('dbTradesSub','▲ 12.4% 전월 대비');
     set('dbFee','5.6억');set('dbFeeSub','▲ 8.7% 전월 대비');set('dbTouch','86회');set('dbTouchSub','▲ 14회 전월 대비');
@@ -465,51 +451,49 @@ function updateDashKpis(){
     set('dbFoot','※ 본 화면의 중개사명·대표자·연락처·주소·거래실적·AI 점수 등은 모두 프로토타입용 가상 데이터입니다.');
   }
 }
+
 function sgRefreshAll(){
   renderTable();renderDashboard();renderRecommendScreen();updateDashKpis();
   naverMap=null;naverMarkers=[];
   if(document.getElementById('map').classList.contains('active'))initNaverMap();
 }
+
 function useDemoBrokers(){
   brokers.length=0;demoBrokers.forEach(b=>brokers.push(b));sgLive=false;sgRefreshAll();sgStatus('시연용 가상 데이터를 표시 중입니다.','');
 }
-async function sgFetchPage(page){
-  let res,text;
-  try{res=await fetch(`${SEOGU_API.base}?pageNo=${page}&numOfRows=${SEOGU_API.pageSize}`);}catch(e){throw new Error('NETWORK');}
-  text=await res.text();
-  if(res.status===404&&!/^\s*[{<]/.test(text))throw new Error('NO_PROXY');
-  if(/FUNCTION_INVOCATION_FAILED|server error has occurred/i.test(text))throw new Error('SERVER_FN');
-  return sgParse(text);
-}
+
 async function loadSeogu(auto){
   if(sgBusy)return;sgBusy=true;
-  const btn=document.getElementById('sgBtn');btn.disabled=true;sgStatus('서구 중개업소를 불러오는 중…','');
+  const btn=document.getElementById('sgBtn');if(btn)btn.disabled=true;
+  sgStatus('CSV 파일 데이터를 불러오는 중…','');
   try{
-    const all=[];let page=1,total=0,firstKey='';
-    while(page<=SEOGU_API.maxPages){
-      const r=await sgFetchPage(page);
-      if(page===1)total=r.total;
-      if(!r.items.length)break;
-      const k=JSON.stringify(r.items[0]);
-      if(page>1&&k===firstKey)break;           // 페이지 번호를 무시하는 API 방어
-      if(page===1)firstKey=k;
-      all.push(...r.items);
-      sgStatus(`서구 중개업소를 불러오는 중… ${all.length.toLocaleString()}${total?' / '+total.toLocaleString():''}건`,'');
-      if((total&&all.length>=total)||r.items.length<SEOGU_API.pageSize)break;
-      page++;
-    }
-    if(!all.length)throw new Error('조회된 업소가 없습니다. 응답 형식을 확인해 주세요.');
-    const norm=all.map(sgNormalize).filter(Boolean);
-    if(!norm.length)throw new Error('영업 중인 업소를 찾지 못했습니다. 응답 필드명을 확인해 주세요. 첫 항목: '+JSON.stringify(all[0]).slice(0,200));
-    brokers.length=0;
-    norm.forEach((it,i)=>brokers.push(makeBroker(sgRow(it,i),i,it.dong)));
-    sgLive=true;sgRefreshAll();
-    sgStatus(`✔ 서구 중개업소 ${norm.length.toLocaleString()}곳 (전체 ${all.length.toLocaleString()}건 중 영업 중) · 수수료·거래·등급 등은 가상 데이터`,'ok');
+    const response = await fetch('대전광역시 서구_부동산 중개업 정보_20260821.csv');
+    if(!response.ok) throw new Error('CSV 파일을 불러오지 못했습니다.');
+    const buffer = await response.arrayBuffer();
+    // cp949 인코딩 디코딩
+    const decoder = new TextDecoder('euc-kr');
+    const text = decoder.decode(buffer);
+    
+    const rows = parseCSV(text);
+    const activeRows = rows.filter(r => r.영업현황 === '영업중');
+    if(activeRows.length === 0) throw new Error('영업 중인 중개업소가 없습니다.');
+    
+    brokers.length = 0;
+    activeRows.forEach((it, i) => {
+      brokers.push(makeBroker(sgRow(it, i), i, sgDong(it.사무소주소)));
+    });
+    
+    sgLive = true;
+    sgRefreshAll();
+    sgStatus(`✔ CSV 파일에서 영업 중인 중개업소 ${activeRows.length.toLocaleString()}곳을 불러왔습니다. (수수료·거래·등급 등은 가상 데이터)`, 'ok');
   }catch(e){
-    const m=e.message==='NETWORK'?'서버(/api/brokers)에 연결하지 못했습니다.':e.message==='NO_PROXY'?'/api/brokers 를 찾을 수 없습니다. api/brokers.js 를 함께 배포했는지 확인해 주세요.':e.message==='SERVER_FN'?'서버 함수가 실행 중 중단되었습니다. Vercel 의 Logs 에서 오류 내용을 확인해 주세요.':e.message;
-    sgStatus((auto?'시연 데이터를 표시합니다 · ':'')+'서구 API 불러오기 실패: '+m,'err');
-  }finally{sgBusy=false;btn.disabled=false;}
+    sgStatus((auto?'시연 데이터를 표시합니다 · ':'')+'CSV 불러오기 실패: '+e.message, 'err');
+  }finally{
+    sgBusy = false;
+    if(btn) btn.disabled = false;
+  }
 }
+
 
 /* ===== Naver Map ===== */
 const DONG_COORD={"변동":[36.3180,127.3770],"도마동":[36.3230,127.3720],"정림동":[36.3030,127.3640],"용문동":[36.3330,127.3830],"괴정동":[36.3350,127.3680],"가장동":[36.3290,127.3600],"만년동":[36.3680,127.3770],"삼천동":[36.3380,127.3660],"내동":[36.3190,127.3870],"봉명동":[36.3550,127.3440],"둔산동":[36.3510,127.3780],"도룡동":[36.3760,127.3880],"월평동":[36.3570,127.3620],"노은동":[36.3680,127.3200],"문화동":[36.3112,127.4036],"관저동":[36.3000,127.3300],"상대동":[36.3470,127.3300],"가양동":[36.3500,127.4510],"복수동":[36.3140,127.3780],"관평동":[36.4230,127.3930],"가수원동":[36.2990,127.3560],"신성동":[36.3880,127.3550],"오류동":[36.3230,127.4060],"탄방동":[36.3410,127.3900],"지족동":[36.3880,127.3270],"갈마동":[36.3430,127.3680],"원신흥동":[36.3440,127.3260],"송촌동":[36.3640,127.4330],"장대동":[36.3600,127.3350],"태평동":[36.3230,127.4000],"죽동":[36.3770,127.3260],"내동":[36.3190,127.3870],"법동":[36.3800,127.4290],"어은동":[36.3640,127.3560],"용전동":[36.3600,127.4390],"계산동":[36.3200,127.3300],"도안동":[36.3260,127.3430],"반석동":[36.3920,127.3170]};
